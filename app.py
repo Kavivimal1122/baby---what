@@ -16,16 +16,16 @@ def load_full_database():
 
 df_patterns = load_full_database()
 
-# --- 2. SESSION STATE (DASHBOARD & STATS) ---
+# --- 2. SESSION STATE INITIALIZATION ---
 if 'sequence' not in st.session_state: st.session_state.sequence = ""
 if 'history_log' not in st.session_state: st.session_state.history_log = []
 if 'streak' not in st.session_state: st.session_state.streak = 0
-if 'max_win_streak' not in st.session_state: st.session_state.max_win_streak = 0
-if 'max_loss_streak' not in st.session_state: st.session_state.max_loss_streak = 0
+if 'max_win' not in st.session_state: st.session_state.max_win = 0
+if 'max_loss' not in st.session_state: st.session_state.max_loss = 0
 if 'total_wins' not in st.session_state: st.session_state.total_wins = 0
 if 'next_pred' not in st.session_state: st.session_state.next_pred = None
 
-# --- 3. LOGIC ENGINE ---
+# --- 3. LOGIC FUNCTIONS ---
 def get_details(val):
     try:
         clean = str(val).split('->')[0].strip()
@@ -51,12 +51,13 @@ def find_match():
         p_val = str(row['Pattern']) if pd.notna(row['Pattern']) else str(row.get('Pattern Structure', ''))
         stream = str(row['Stream'])
         target = sb_seq if "S/B" in stream else rg_seq if "R/G" in stream else seq
-        if target.endswith(p_val) and p_val != "":
+        if target.endswith(p_val) and p_val != "" and p_val != "nan":
             if best_match is None or len(p_val) > len(str(best_match['Pattern'])):
                 best_match = row
     return best_match
 
 def handle_input(num):
+    # Process Previous Prediction
     if st.session_state.next_pred:
         pred_text = st.session_state.next_pred['display']
         actual_text = get_details(num)
@@ -65,19 +66,20 @@ def handle_input(num):
         if is_win:
             st.session_state.streak = 1 if st.session_state.streak < 0 else st.session_state.streak + 1
             st.session_state.total_wins += 1
-            # Update Max Win Count
-            if st.session_state.streak > st.session_state.max_win_streak:
-                st.session_state.max_win_streak = st.session_state.streak
+            st.session_state.max_win = max(st.session_state.max_win, st.session_state.streak)
         else:
             st.session_state.streak = -1 if st.session_state.streak > 0 else st.session_state.streak - 1
-            # Update Max Loss Count (streak is negative, so we use absolute value)
-            if abs(st.session_state.streak) > st.session_state.max_loss_streak:
-                st.session_state.max_loss_streak = abs(st.session_state.streak)
+            st.session_state.max_loss = max(st.session_state.max_loss, abs(st.session_state.streak))
             
         st.session_state.history_log.insert(0, {
             "Entry": num, "Prediction": pred_text, "Result": actual_text, "Status": "✅ WIN" if is_win else "❌ LOSS"
         })
+    else:
+        st.session_state.history_log.insert(0, {
+            "Entry": num, "Prediction": "No Match", "Result": get_details(num), "Status": "SKIP"
+        })
 
+    # Update Sequence and Find Next
     st.session_state.sequence += str(num)
     match = find_match()
     if match is not None:
@@ -89,56 +91,55 @@ def handle_input(num):
             "count": match['Occurrence count'],
             "raw_next": match['Next result']
         }
-    else: st.session_state.next_pred = None
+    else:
+        st.session_state.next_pred = None
 
-# --- 4. DASHBOARD UI ---
-st.title("📊 Pro Prediction Dashboard")
+# --- 4. UI DASHBOARD ---
+st.title("📊 Prediction Dashboard")
 
-# TOP DASHBOARD STATS
+# Top Stats Row
 m1, m2, m3, m4 = st.columns(4)
 valid_games = [x for x in st.session_state.history_log if x['Status'] != "SKIP"]
 win_rate = (st.session_state.total_wins / len(valid_games) * 100) if valid_games else 0
 
-m1.metric("Current Streak", st.session_state.streak)
-m2.metric("Win Rate", f"{win_rate:.1f}%")
-m3.metric("Max Win Streak", st.session_state.max_win_streak, delta_color="normal")
-m4.metric("Max Loss Streak", st.session_state.max_loss_streak, delta_color="inverse")
-
-# SEQUENCE BAR
-st.code(f"Current Sequence: {st.session_state.sequence[-20:] if st.session_state.sequence else 'Empty'}", language="text")
+m1.metric("Streak", st.session_state.streak)
+m2.metric("Win %", f"{win_rate:.1f}%")
+m3.metric("Max Win", st.session_state.max_win)
+m4.metric("Max Loss", st.session_state.max_loss)
 
 st.divider()
 
-# NEXT PREDICTION
+# Prediction Display
 if st.session_state.next_pred:
     p = st.session_state.next_pred
-    st.success(f"### 🎯 NEXT TARGET: {p['display']}")
-    
-    with st.expander("View Pattern Details"):
-        meta_df = pd.DataFrame({
-            "Property": ["Model", "Pattern", "Length", "Occurrence", "Raw Result"],
-            "Details": [p['model'], p['pattern'], p['length'], p['count'], p['raw_next']]
-        })
-        st.table(meta_df)
+    st.success(f"### 🎯 NEXT: {p['display']}")
+    with st.expander("Show Pattern Data"):
+        st.write(f"**Model:** {p['model']}")
+        st.write(f"**Pattern:** {p['pattern']}")
+        st.write(f"**Occurrence Count:** {p['count']}")
 else:
-    st.warning("Awaiting Pattern Match...")
+    st.warning("Enter numbers to match patterns...")
 
-# INPUT PANEL
-st.write("### ⌨️ Select Game Result")
-cols = st.columns(5)
+# MOBILE-OPTIMIZED VERTICAL KEYPAD
+st.write("### ⌨️ Select Number")
+# This creates a vertical list of buttons 0 to 9 as requested
 for i in range(10):
-    label = f"🔴 {i}" if i % 2 == 0 else f"🟢 {i}"
-    if cols[i % 5].button(label, use_container_width=True, key=f"btn_{i}"):
+    btn_label = f"🔴 {i}" if i % 2 == 0 else f"🟢 {i}"
+    if st.button(btn_label, use_container_width=True, key=f"mobile_btn_{i}"):
         handle_input(i)
         st.rerun()
 
-# HISTORY
+# PERSISTENT HISTORY TABLE
+st.divider()
 if st.session_state.history_log:
     st.write("### 📝 History Maintenance")
+    # Using st.table for clearer mobile visibility of pasted history
     st.table(pd.DataFrame(st.session_state.history_log))
+    
+    # Download Button
     csv = pd.DataFrame(st.session_state.history_log).to_csv(index=False).encode('utf-8')
     st.download_button("📥 Download History", csv, "history.csv", "text/csv")
 
-if st.button("Reset Dashboard"):
+if st.button("Reset All Records"):
     for key in list(st.session_state.keys()): del st.session_state[key]
     st.rerun()
