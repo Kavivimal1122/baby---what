@@ -16,7 +16,7 @@ def load_full_database():
 
 df_patterns = load_full_database()
 
-# --- 2. SESSION STATE ---
+# --- 2. SESSION STATE (CORE LOGIC & DASHBOARD) ---
 if 'sequence' not in st.session_state: st.session_state.sequence = ""
 if 'history_log' not in st.session_state: st.session_state.history_log = []
 if 'streak' not in st.session_state: st.session_state.streak = 0
@@ -25,33 +25,23 @@ if 'total_wins' not in st.session_state: st.session_state.total_wins = 0
 
 # --- 3. LOGIC ENGINE ---
 def get_details(val):
-    """Maps any result to the format: number big/small red/green"""
+    """Maps result to: number big/small red/green"""
     try:
-        # Split cycle strings like 'SG -> BR' to get the immediate next step
         clean = str(val).split('->')[0].strip()
-        
-        # Mapping for category codes
         mapping = {
-            'SG': 'SMALL GREEN', 'SR': 'SMALL RED',
-            'BG': 'BIG GREEN', 'BR': 'BIG RED',
+            'SG': 'SMALL GREEN', 'SR': 'SMALL RED', 'BG': 'BIG GREEN', 'BR': 'BIG RED',
             'S': 'SMALL', 'B': 'BIG', 'R': 'RED', 'G': 'GREEN'
         }
-        
-        if clean in mapping:
-            return mapping[clean]
-        
+        if clean in mapping: return mapping[clean]
         n = int(clean)
         size = "BIG" if n >= 5 else "SMALL"
         color = "RED" if n % 2 == 0 else "GREEN"
         return f"{n} {size} {color}"
-    except:
-        return str(val)
+    except: return str(val)
 
 def find_match():
     if df_patterns is None: return None
     seq = st.session_state.sequence
-    
-    # Generate translated strings for S/B and R/G streams
     sb_seq = "".join(['B' if int(n) >= 5 else 'S' for n in seq])
     rg_seq = "".join(['R' if int(n) % 2 == 0 else 'G' for n in seq])
     
@@ -59,25 +49,17 @@ def find_match():
     for _, row in df_patterns.iterrows():
         p_val = str(row['Pattern']) if pd.notna(row['Pattern']) else str(row.get('Pattern Structure', ''))
         stream = str(row['Stream'])
-        
-        # Matching Logic based on Stream Type
         target = sb_seq if "S/B" in stream else rg_seq if "R/G" in stream else seq
-        
         if target.endswith(p_val) and p_val != "":
             if best_match is None or len(p_val) > len(str(best_match['Pattern'])):
                 best_match = row
     return best_match
 
 def handle_input(num):
-    # 1. Validation of Previous Prediction
     if st.session_state.next_pred:
         pred_text = st.session_state.next_pred['display']
         actual_text = get_details(num)
-        
-        # WIN if the predicted category (BIG/SMALL) appears in the actual result
-        is_win = False
-        if ("BIG" in pred_text and num >= 5) or ("SMALL" in pred_text and num <= 4):
-            is_win = True
+        is_win = ("BIG" in pred_text and num >= 5) or ("SMALL" in pred_text and num <= 4)
         
         if is_win:
             st.session_state.streak = 1 if st.session_state.streak < 0 else st.session_state.streak + 1
@@ -86,13 +68,9 @@ def handle_input(num):
             st.session_state.streak = -1 if st.session_state.streak > 0 else st.session_state.streak - 1
             
         st.session_state.history_log.insert(0, {
-            "Entry": num,
-            "Prediction": pred_text,
-            "Result": actual_text,
-            "Status": "✅ WIN" if is_win else "❌ LOSS"
+            "Entry": num, "Prediction": pred_text, "Result": actual_text, "Status": "✅ WIN" if is_win else "❌ LOSS"
         })
 
-    # 2. Update Sequence and Find Next Match
     st.session_state.sequence += str(num)
     match = find_match()
     if match is not None:
@@ -104,23 +82,38 @@ def handle_input(num):
             "count": match['Occurrence count'],
             "raw_next": match['Next result']
         }
-    else:
-        st.session_state.next_pred = None
+    else: st.session_state.next_pred = None
 
-# --- 4. DASHBOARD UI ---
+# --- 4. DASHBOARD UI (TOP DOWN) ---
 st.title("📊 Pattern Dashboard Pro")
 
-# Top Stats
+# 1. TOP STATS BAR
 c1, c2, c3 = st.columns(3)
 valid_games = [x for x in st.session_state.history_log if x['Status'] != "SKIP"]
 win_rate = (st.session_state.total_wins / len(valid_games) * 100) if valid_games else 0
 
 c1.metric("Current Streak", st.session_state.streak)
 c2.metric("Win Rate", f"{win_rate:.1f}%")
-c3.metric("Total Games", len(valid_games))
+c3.metric("Total Predictions", len(valid_games))
 
-# Input Pad
-st.write("### ⌨️ Select Game Result")
+st.divider()
+
+# 2. NEXT PREDICTION SECTION
+if st.session_state.next_pred:
+    p = st.session_state.next_pred
+    st.success(f"### 🎯 NEXT TARGET: {p['display']}")
+    
+    # Metadata Table for the "Next Result"
+    meta_df = pd.DataFrame({
+        "Property": ["Model", "Pattern", "Length", "Occurrence", "Raw Result"],
+        "Details": [p['model'], p['pattern'], p['length'], p['count'], p['raw_next']]
+    })
+    st.table(meta_df)
+else:
+    st.warning("No pattern match found. Please input game history to generate a target.")
+
+# 3. INPUT KEYPAD
+st.write("### ⌨️ Input Panel")
 cols = st.columns(5)
 for i in range(10):
     label = f"🔴 {i}" if i % 2 == 0 else f"🟢 {i}"
@@ -128,27 +121,15 @@ for i in range(10):
         handle_input(i)
         st.rerun()
 
-# Prediction Detail Card
-st.divider()
-if st.session_state.next_pred:
-    p = st.session_state.next_pred
-    st.success(f"### 🎯 NEXT: {p['display']}")
-    
-    # Detailed Information Table
-    st.markdown("#### Pattern Metadata")
-    meta_df = pd.DataFrame({
-        "Property": ["Model", "Pattern", "Length", "Occurrence", "Next Result"],
-        "Details": [p['model'], p['pattern'], p['length'], p['count'], p['raw_next']]
-    })
-    st.table(meta_df)
-else:
-    st.warning("No pattern match found for current sequence. Keep entering results.")
-
-# History Maintenance
+# 4. HISTORY TABLE
 if st.session_state.history_log:
     st.write("### 📝 History Maintenance")
     st.table(pd.DataFrame(st.session_state.history_log))
+    
+    # Download Button
+    csv = pd.DataFrame(st.session_state.history_log).to_csv(index=False).encode('utf-8')
+    st.download_button("📥 Download history.csv", csv, "history.csv", "text/csv")
 
-if st.button("Reset Dashboard"):
+if st.button("Reset All Data"):
     for key in st.session_state.keys(): del st.session_state[key]
     st.rerun()
