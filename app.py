@@ -4,39 +4,7 @@ import os
 
 st.set_page_config(page_title="Live Predictor Pro", layout="centered")
 
-# ---------------- COMPACT CSS ----------------
-st.markdown("""
-<style>
-.block-container { padding: 5px 10px 5px 10px !important; }
-
-h1 { font-size:18px !important; margin-bottom:5px !important; }
-h3 { font-size:14px !important; margin-bottom:3px !important; }
-
-div[data-testid="metric-container"] {
-    padding:4px !important;
-}
-
-div[data-testid="metric-container"] > div {
-    font-size:12px !important;
-}
-
-div.stButton > button {
-    height:38px !important;
-    font-size:14px !important;
-    font-weight:600 !important;
-    padding:0px !important;
-}
-
-.small-history table {
-    font-size:10px !important;
-}
-
-.stDivider { margin:4px 0px !important; }
-
-</style>
-""", unsafe_allow_html=True)
-
-# --- DATA LOADING ---
+# --- 1. DATA LOADING ENGINE ---
 @st.cache_data
 def load_full_database():
     file_path = 'deterministic_patterns_full_analysis.csv'
@@ -48,7 +16,7 @@ def load_full_database():
 
 df_patterns = load_full_database()
 
-# --- SESSION STATE ---
+# --- 2. SESSION STATE INITIALIZATION ---
 if 'sequence' not in st.session_state: st.session_state.sequence = ""
 if 'history_log' not in st.session_state: st.session_state.history_log = []
 if 'streak' not in st.session_state: st.session_state.streak = 0
@@ -57,7 +25,7 @@ if 'max_loss' not in st.session_state: st.session_state.max_loss = 0
 if 'total_wins' not in st.session_state: st.session_state.total_wins = 0
 if 'next_pred' not in st.session_state: st.session_state.next_pred = None
 
-# --- LOGIC FUNCTIONS (UNCHANGED) ---
+# --- 3. LOGIC FUNCTIONS ---
 def get_details(val):
     try:
         clean = str(val).split('->')[0].strip()
@@ -70,8 +38,7 @@ def get_details(val):
         size = "BIG" if n >= 5 else "SMALL"
         color = "RED" if n % 2 == 0 else "GREEN"
         return f"{n} {size} {color}"
-    except:
-        return str(val)
+    except: return str(val)
 
 def find_match():
     if df_patterns is None: return None
@@ -90,6 +57,7 @@ def find_match():
     return best_match
 
 def handle_input(num):
+    # Process Previous Prediction
     if st.session_state.next_pred:
         pred_text = st.session_state.next_pred['display']
         actual_text = get_details(num)
@@ -104,80 +72,75 @@ def handle_input(num):
             st.session_state.max_loss = max(st.session_state.max_loss, abs(st.session_state.streak))
             
         st.session_state.history_log.insert(0, {
-            "Entry": num,
-            "Prediction": pred_text,
-            "Result": actual_text,
-            "Status": "✅ WIN" if is_win else "❌ LOSS"
+            "Entry": num, "Prediction": pred_text, "Result": actual_text, "Status": "✅ WIN" if is_win else "❌ LOSS"
         })
     else:
         st.session_state.history_log.insert(0, {
-            "Entry": num,
-            "Prediction": "No Match",
-            "Result": get_details(num),
-            "Status": "SKIP"
+            "Entry": num, "Prediction": "No Match", "Result": get_details(num), "Status": "SKIP"
         })
 
+    # Update Sequence and Find Next
     st.session_state.sequence += str(num)
     match = find_match()
     if match is not None:
         st.session_state.next_pred = {
             "display": get_details(match['Next result']),
             "model": match['Model'],
-            "pattern": match['Pattern'],
+            "pattern": match['Pattern'] if pd.notna(match['Pattern']) else match.get('Pattern Structure', 'N/A'),
             "length": match['Length'],
-            "count": match['Occurrence count']
+            "count": match['Occurrence count'],
+            "raw_next": match['Next result']
         }
     else:
         st.session_state.next_pred = None
 
-# ---------------- UI ----------------
+# --- 4. UI DASHBOARD ---
+st.title("📊 Prediction Dashboard")
 
-st.title("📊 Predictor")
-
-# Compact Metrics
-col1, col2, col3, col4 = st.columns(4)
+# Top Stats Row
+m1, m2, m3, m4 = st.columns(4)
 valid_games = [x for x in st.session_state.history_log if x['Status'] != "SKIP"]
 win_rate = (st.session_state.total_wins / len(valid_games) * 100) if valid_games else 0
 
-col1.metric("Streak", st.session_state.streak)
-col2.metric("Win %", f"{win_rate:.1f}%")
-col3.metric("Max W", st.session_state.max_win)
-col4.metric("Max L", st.session_state.max_loss)
+m1.metric("Streak", st.session_state.streak)
+m2.metric("Win %", f"{win_rate:.1f}%")
+m3.metric("Max Win", st.session_state.max_win)
+m4.metric("Max Loss", st.session_state.max_loss)
 
-# Prediction
+st.divider()
+
+# Prediction Display
 if st.session_state.next_pred:
-    st.success(f"🎯 {st.session_state.next_pred['display']}")
+    p = st.session_state.next_pred
+    st.success(f"### 🎯 NEXT: {p['display']}")
+    with st.expander("Show Pattern Data"):
+        st.write(f"**Model:** {p['model']}")
+        st.write(f"**Pattern:** {p['pattern']}")
+        st.write(f"**Occurrence Count:** {p['count']}")
 else:
-    st.warning("Waiting...")
+    st.warning("Enter numbers to match patterns...")
 
-# ---------- GRID KEYPAD ----------
-st.markdown("### Keypad")
-
-row1 = st.columns(5)
-row2 = st.columns(5)
-
-for i in range(5):
-    if row1[i].button(str(i), use_container_width=True):
+# MOBILE-OPTIMIZED VERTICAL KEYPAD
+st.write("### ⌨️ Select Number")
+# This creates a vertical list of buttons 0 to 9 as requested
+for i in range(10):
+    btn_label = f"🔴 {i}" if i % 2 == 0 else f"🟢 {i}"
+    if st.button(btn_label, use_container_width=True, key=f"mobile_btn_{i}"):
         handle_input(i)
         st.rerun()
 
-for i in range(5, 10):
-    if row2[i-5].button(str(i), use_container_width=True):
-        handle_input(i)
-        st.rerun()
-
-# ---------- COMPACT HISTORY ----------
+# PERSISTENT HISTORY TABLE
+st.divider()
 if st.session_state.history_log:
-    st.markdown("### History")
-    small_df = pd.DataFrame(st.session_state.history_log[:5])
-    st.markdown('<div class="small-history">', unsafe_allow_html=True)
-    st.table(small_df)
-    st.markdown('</div>', unsafe_allow_html=True)
-
+    st.write("### 📝 History Maintenance")
+    # Using st.table for clearer mobile visibility of pasted history
+    st.table(pd.DataFrame(st.session_state.history_log))
+    
+    # Download Button
     csv = pd.DataFrame(st.session_state.history_log).to_csv(index=False).encode('utf-8')
-    st.download_button("Download", csv, "history.csv", "text/csv")
+    st.download_button("📥 Download History", csv, "history.csv", "text/csv")
 
-if st.button("Reset"):
-    for key in list(st.session_state.keys()):
-        del st.session_state[key]
+if st.button("Reset All Records"):
+    for key in list(st.session_state.keys()): del st.session_state[key]
     st.rerun()
+
