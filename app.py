@@ -16,16 +16,17 @@ def load_full_database():
 
 df_patterns = load_full_database()
 
-# --- 2. SESSION STATE (CORE LOGIC & DASHBOARD) ---
+# --- 2. SESSION STATE (DASHBOARD & STATS) ---
 if 'sequence' not in st.session_state: st.session_state.sequence = ""
 if 'history_log' not in st.session_state: st.session_state.history_log = []
 if 'streak' not in st.session_state: st.session_state.streak = 0
-if 'next_pred' not in st.session_state: st.session_state.next_pred = None
+if 'max_win_streak' not in st.session_state: st.session_state.max_win_streak = 0
+if 'max_loss_streak' not in st.session_state: st.session_state.max_loss_streak = 0
 if 'total_wins' not in st.session_state: st.session_state.total_wins = 0
+if 'next_pred' not in st.session_state: st.session_state.next_pred = None
 
 # --- 3. LOGIC ENGINE ---
 def get_details(val):
-    """Maps result to: number big/small red/green"""
     try:
         clean = str(val).split('->')[0].strip()
         mapping = {
@@ -64,8 +65,14 @@ def handle_input(num):
         if is_win:
             st.session_state.streak = 1 if st.session_state.streak < 0 else st.session_state.streak + 1
             st.session_state.total_wins += 1
+            # Update Max Win Count
+            if st.session_state.streak > st.session_state.max_win_streak:
+                st.session_state.max_win_streak = st.session_state.streak
         else:
             st.session_state.streak = -1 if st.session_state.streak > 0 else st.session_state.streak - 1
+            # Update Max Loss Count (streak is negative, so we use absolute value)
+            if abs(st.session_state.streak) > st.session_state.max_loss_streak:
+                st.session_state.max_loss_streak = abs(st.session_state.streak)
             
         st.session_state.history_log.insert(0, {
             "Entry": num, "Prediction": pred_text, "Result": actual_text, "Status": "✅ WIN" if is_win else "❌ LOSS"
@@ -84,36 +91,40 @@ def handle_input(num):
         }
     else: st.session_state.next_pred = None
 
-# --- 4. DASHBOARD UI (TOP DOWN) ---
-st.title("📊 Pattern Dashboard Pro")
+# --- 4. DASHBOARD UI ---
+st.title("📊 Pro Prediction Dashboard")
 
-# 1. TOP STATS BAR
-c1, c2, c3 = st.columns(3)
+# TOP DASHBOARD STATS
+m1, m2, m3, m4 = st.columns(4)
 valid_games = [x for x in st.session_state.history_log if x['Status'] != "SKIP"]
 win_rate = (st.session_state.total_wins / len(valid_games) * 100) if valid_games else 0
 
-c1.metric("Current Streak", st.session_state.streak)
-c2.metric("Win Rate", f"{win_rate:.1f}%")
-c3.metric("Total Predictions", len(valid_games))
+m1.metric("Current Streak", st.session_state.streak)
+m2.metric("Win Rate", f"{win_rate:.1f}%")
+m3.metric("Max Win Streak", st.session_state.max_win_streak, delta_color="normal")
+m4.metric("Max Loss Streak", st.session_state.max_loss_streak, delta_color="inverse")
+
+# SEQUENCE BAR
+st.code(f"Current Sequence: {st.session_state.sequence[-20:] if st.session_state.sequence else 'Empty'}", language="text")
 
 st.divider()
 
-# 2. NEXT PREDICTION SECTION
+# NEXT PREDICTION
 if st.session_state.next_pred:
     p = st.session_state.next_pred
     st.success(f"### 🎯 NEXT TARGET: {p['display']}")
     
-    # Metadata Table for the "Next Result"
-    meta_df = pd.DataFrame({
-        "Property": ["Model", "Pattern", "Length", "Occurrence", "Raw Result"],
-        "Details": [p['model'], p['pattern'], p['length'], p['count'], p['raw_next']]
-    })
-    st.table(meta_df)
+    with st.expander("View Pattern Details"):
+        meta_df = pd.DataFrame({
+            "Property": ["Model", "Pattern", "Length", "Occurrence", "Raw Result"],
+            "Details": [p['model'], p['pattern'], p['length'], p['count'], p['raw_next']]
+        })
+        st.table(meta_df)
 else:
-    st.warning("No pattern match found. Please input game history to generate a target.")
+    st.warning("Awaiting Pattern Match...")
 
-# 3. INPUT KEYPAD
-st.write("### ⌨️ Input Panel")
+# INPUT PANEL
+st.write("### ⌨️ Select Game Result")
 cols = st.columns(5)
 for i in range(10):
     label = f"🔴 {i}" if i % 2 == 0 else f"🟢 {i}"
@@ -121,15 +132,13 @@ for i in range(10):
         handle_input(i)
         st.rerun()
 
-# 4. HISTORY TABLE
+# HISTORY
 if st.session_state.history_log:
     st.write("### 📝 History Maintenance")
     st.table(pd.DataFrame(st.session_state.history_log))
-    
-    # Download Button
     csv = pd.DataFrame(st.session_state.history_log).to_csv(index=False).encode('utf-8')
-    st.download_button("📥 Download history.csv", csv, "history.csv", "text/csv")
+    st.download_button("📥 Download History", csv, "history.csv", "text/csv")
 
-if st.button("Reset All Data"):
-    for key in st.session_state.keys(): del st.session_state[key]
+if st.button("Reset Dashboard"):
+    for key in list(st.session_state.keys()): del st.session_state[key]
     st.rerun()
