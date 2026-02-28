@@ -1,73 +1,123 @@
 import streamlit as st
 import pandas as pd
+import base64
 
-st.set_page_config(page_title="Live Pattern Predictor", layout="centered")
+st.set_page_config(page_title="Live Predictor Pro", layout="centered")
 
-# --- DATA LOADING ---
+# --- EMBEDDED DATABASE (No CSV Required) ---
+# To keep this message clean, I am using the structure. 
+# You can paste your full pattern list here.
 @st.cache_data
-def load_data():
-    df = pd.read_csv('deterministic_patterns_full_analysis.csv')
-    return df[df['Accuracy %'] == 100.0]
+def get_patterns():
+    data = [
+        {"Model": "Model 1", "Pattern": "9955", "Next": "6", "Stream": "Numbers"},
+        {"Model": "Model 3 (Cycle)", "Pattern": "SSBBBSSBBSB", "Next": "B -> S", "Stream": "S/B"},
+        {"Model": "Model 1", "Pattern": "BGSGBRSR", "Next": "SR", "Stream": "Combined"},
+        # Paste all remaining patterns from your CSV here inside this list
+    ]
+    return pd.DataFrame(data)
 
-patterns = load_data()
+patterns = get_patterns()
 
-# --- HELPER FUNCTIONS ---
-def get_props(val):
-    if val in ['B', 'S', 'R', 'G', 'SR', 'SG', 'BR', 'BG']:
-        m = {'B': 'BIG', 'S': 'SMALL', 'R': 'RED', 'G': 'GREEN', 'SR': 'SMALL RED', 'SG': 'SMALL GREEN', 'BR': 'BIG RED', 'BG': 'BIG GREEN'}
-        return m.get(val, val)
+# --- APP STATE ---
+if 'seq' not in st.session_state: st.session_state.seq = ""
+if 'history' not in st.session_state: st.session_state.history = []
+if 'streak' not in st.session_state: st.session_state.streak = 0
+if 'last_pred' not in st.session_state: st.session_state.last_pred = None
+
+# --- LOGIC FUNCTIONS ---
+def get_props(n_str):
     try:
-        n = int(val)
-        return f"{n} ({'BIG' if n >= 5 else 'SMALL'}) ({'RED' if n % 2 == 0 else 'GREEN'})"
-    except: return val
+        n = int(n_str.split('->')[0].strip())
+        size = "BIG" if n >= 5 else "SMALL"
+        color = "RED" if n % 2 == 0 else "GREEN"
+        return {"val": n, "size": size, "color": color, "text": f"{n} {size} {color}"}
+    except: return {"val": n_str, "size": n_str, "color": "", "text": n_str}
 
-def translate(h):
+def translate_h(h):
     sb = "".join(['B' if int(n) >= 5 else 'S' for n in h])
     rg = "".join(['R' if int(n) % 2 == 0 else 'G' for n in h])
     return sb, rg
 
-# --- UI DESIGN ---
-st.title("🎯 Live Prediction Engine")
-st.subheader("100% Deterministic Patterns")
+def process_input(num):
+    # 1. Track Win/Loss of PREVIOUS prediction
+    if st.session_state.last_pred:
+        p = st.session_state.last_pred
+        actual = get_props(num)
+        win = (str(actual['size']) == str(p['size']))
+        
+        # Update Streak
+        if win:
+            st.session_state.streak = 1 if st.session_state.streak < 0 else st.session_state.streak + 1
+        else:
+            st.session_state.streak = -1 if st.session_state.streak > 0 else st.session_state.streak - 1
+            
+        st.session_state.history.insert(0, {
+            "Entry": num,
+            "Prediction": p['text'],
+            "Result": actual['text'],
+            "Status": "WIN" if win else "LOSS"
+        })
 
-if 'history' not in st.session_state:
-    st.session_state.history = ""
-if 'logs' not in st.session_state:
-    st.session_state.logs = []
-
-# Input Area
-user_input = st.text_input("Enter Result (0-9):", key="input_box")
-
-if user_input:
-    # Track entry
-    st.session_state.history += user_input
-    h = st.session_state.history
-    sb_h, rg_h = translate(h)
+    # 2. Update sequence and find NEXT prediction
+    st.session_state.seq += num
+    sb_h, rg_h = translate_h(st.session_state.seq)
     
-    # Matching Engine
     best = None
     for _, row in patterns.iterrows():
-        p = str(row['Pattern'])
+        p_val = str(row['Pattern'])
         stream = row['Stream']
-        target = sb_h if stream == 'S/B' else rg_h if stream == 'R/G' else h
-        
-        if target.endswith(p):
-            if best is None or len(p) > len(str(best['Pattern'])):
+        target = sb_h if stream == 'S/B' else rg_h if stream == 'R/G' else st.session_state.seq
+        if target.endswith(p_val):
+            if best is None or len(p_val) > len(str(best['Pattern'])):
                 best = row
 
-    # Prediction Output
-    st.divider()
     if best is not None:
-        pred_raw = str(best['Next result']).split('->')[0].strip()
-        result_text = get_props(pred_raw)
-        st.success(f"### NEXT PREDICTION: {result_text}")
-        st.info(f"Model: {best['Model']} | Pattern: {best['Pattern']} | Acc: 100%")
+        st.session_state.last_pred = get_props(str(best['Next']))
     else:
-        st.warning("No 100% Match Found. Keep entering numbers...")
+        st.session_state.last_pred = None
 
-# History Display
+# --- UI UI ---
+st.title("🎯 Live Pattern Engine")
+
+# Streak Display
+s_color = "green" if st.session_state.streak >= 0 else "red"
+st.markdown(f"### Current Streak: :{s_color}[{st.session_state.streak}]")
+
+# 0-9 Keypad
+st.write("### Input Result")
+cols = st.columns(5)
+for i in range(10):
+    if cols[i % 5].button(str(i), use_container_width=True):
+        process_input(str(i))
+        st.rerun()
+
+# Prediction Output
 st.divider()
-st.write("**Sequence History:**", st.session_state.history)
-if st.button("Clear History"):
-    st.session_state.history = ""
+if st.session_state.last_pred:
+    p = st.session_state.last_pred
+    st.success(f"## NEXT PREDICTION: {p['text']}")
+else:
+    st.warning("No Pattern Match. Enter more numbers...")
+
+# History Table
+if st.session_state.history:
+    st.write("### Game History")
+    df_hist = pd.DataFrame(st.session_state.history)
+    st.table(df_hist)
+    
+    # Download Button
+    csv = df_hist.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="📥 Download History CSV",
+        data=csv,
+        file_name='game_history.csv',
+        mime='text/csv',
+    )
+
+if st.button("Reset Everything"):
+    st.session_state.seq = ""
+    st.session_state.history = []
+    st.session_state.streak = 0
+    st.session_state.last_pred = None
     st.rerun()
