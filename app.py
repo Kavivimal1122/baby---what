@@ -16,7 +16,7 @@ def load_full_database():
 
 df_patterns = load_full_database()
 
-# --- 2. SESSION STATE (DASHBOARD STORAGE) ---
+# --- 2. SESSION STATE ---
 if 'sequence' not in st.session_state: st.session_state.sequence = ""
 if 'history_log' not in st.session_state: st.session_state.history_log = []
 if 'streak' not in st.session_state: st.session_state.streak = 0
@@ -25,36 +25,59 @@ if 'total_wins' not in st.session_state: st.session_state.total_wins = 0
 
 # --- 3. LOGIC ENGINE ---
 def get_details(val):
+    """Maps any result to the format: number big/small red/green"""
     try:
+        # Split cycle strings like 'SG -> BR' to get the immediate next step
         clean = str(val).split('->')[0].strip()
-        if clean in ['B', 'S', 'R', 'G', 'SR', 'SG', 'BR', 'BG']:
-            m = {'B': 'BIG', 'S': 'SMALL', 'R': 'RED', 'G': 'GREEN', 'SR': 'SMALL RED', 'SG': 'SMALL GREEN', 'BR': 'BIG RED', 'BG': 'BIG GREEN'}
-            return m.get(clean, clean)
+        
+        # Mapping for category codes
+        mapping = {
+            'SG': 'SMALL GREEN', 'SR': 'SMALL RED',
+            'BG': 'BIG GREEN', 'BR': 'BIG RED',
+            'S': 'SMALL', 'B': 'BIG', 'R': 'RED', 'G': 'GREEN'
+        }
+        
+        if clean in mapping:
+            return mapping[clean]
+        
         n = int(clean)
-        return f"{n} {'BIG' if n >= 5 else 'SMALL'} {'RED' if n % 2 == 0 else 'GREEN'}"
-    except: return str(val)
+        size = "BIG" if n >= 5 else "SMALL"
+        color = "RED" if n % 2 == 0 else "GREEN"
+        return f"{n} {size} {color}"
+    except:
+        return str(val)
 
 def find_match():
     if df_patterns is None: return None
     seq = st.session_state.sequence
+    
+    # Generate translated strings for S/B and R/G streams
     sb_seq = "".join(['B' if int(n) >= 5 else 'S' for n in seq])
     rg_seq = "".join(['R' if int(n) % 2 == 0 else 'G' for n in seq])
+    
     best_match = None
     for _, row in df_patterns.iterrows():
-        p_val = str(row['Pattern'])
+        p_val = str(row['Pattern']) if pd.notna(row['Pattern']) else str(row.get('Pattern Structure', ''))
         stream = str(row['Stream'])
+        
+        # Matching Logic based on Stream Type
         target = sb_seq if "S/B" in stream else rg_seq if "R/G" in stream else seq
-        if target.endswith(p_val):
+        
+        if target.endswith(p_val) and p_val != "":
             if best_match is None or len(p_val) > len(str(best_match['Pattern'])):
                 best_match = row
     return best_match
 
 def handle_input(num):
+    # 1. Validation of Previous Prediction
     if st.session_state.next_pred:
-        pred = st.session_state.next_pred['display']
-        actual = get_details(num)
-        # Match logic based on Small/Big
-        is_win = ("BIG" in pred and num >= 5) or ("SMALL" in pred and num <= 4)
+        pred_text = st.session_state.next_pred['display']
+        actual_text = get_details(num)
+        
+        # WIN if the predicted category (BIG/SMALL) appears in the actual result
+        is_win = False
+        if ("BIG" in pred_text and num >= 5) or ("SMALL" in pred_text and num <= 4):
+            is_win = True
         
         if is_win:
             st.session_state.streak = 1 if st.session_state.streak < 0 else st.session_state.streak + 1
@@ -63,59 +86,68 @@ def handle_input(num):
             st.session_state.streak = -1 if st.session_state.streak > 0 else st.session_state.streak - 1
             
         st.session_state.history_log.insert(0, {
-            "Entry": num, "Prediction": pred, "Result": actual, "Status": "✅ WIN" if is_win else "❌ LOSS"
-        })
-    else:
-        st.session_state.history_log.insert(0, {
-            "Entry": num, "Prediction": "No Match", "Result": get_details(num), "Status": "SKIP"
+            "Entry": num,
+            "Prediction": pred_text,
+            "Result": actual_text,
+            "Status": "✅ WIN" if is_win else "❌ LOSS"
         })
 
+    # 2. Update Sequence and Find Next Match
     st.session_state.sequence += str(num)
     match = find_match()
     if match is not None:
-        st.session_state.next_pred = {"display": get_details(match['Next result']), "model": match['Model'], "pattern": match['Pattern']}
-    else: st.session_state.next_pred = None
+        st.session_state.next_pred = {
+            "display": get_details(match['Next result']),
+            "model": match['Model'],
+            "pattern": match['Pattern'] if pd.notna(match['Pattern']) else match.get('Pattern Structure', 'N/A'),
+            "length": match['Length'],
+            "count": match['Occurrence count'],
+            "raw_next": match['Next result']
+        }
+    else:
+        st.session_state.next_pred = None
 
 # --- 4. DASHBOARD UI ---
-st.title("📊 Prediction Dashboard")
+st.title("📊 Pattern Dashboard Pro")
 
-# Top Dashboard Stats
-t1, t2, t3 = st.columns(3)
-total_games = len([x for x in st.session_state.history_log if x['Status'] != "SKIP"])
-win_rate = (st.session_state.total_wins / total_games * 100) if total_games > 0 else 0
+# Top Stats
+c1, c2, c3 = st.columns(3)
+valid_games = [x for x in st.session_state.history_log if x['Status'] != "SKIP"]
+win_rate = (st.session_state.total_wins / len(valid_games) * 100) if valid_games else 0
 
-t1.metric("Current Streak", st.session_state.streak)
-t2.metric("Win Rate", f"{win_rate:.1f}%")
-t3.metric("Total Games", total_games)
+c1.metric("Current Streak", st.session_state.streak)
+c2.metric("Win Rate", f"{win_rate:.1f}%")
+c3.metric("Total Games", len(valid_games))
 
-# Colored Input Keypad
-st.write("### ⌨️ Input Panel")
+# Input Pad
+st.write("### ⌨️ Select Game Result")
 cols = st.columns(5)
 for i in range(10):
-    # Even = Red (🔴), Odd = Green (🟢)
     label = f"🔴 {i}" if i % 2 == 0 else f"🟢 {i}"
     if cols[i % 5].button(label, use_container_width=True, key=f"btn_{i}"):
         handle_input(i)
         st.rerun()
 
-# Live Prediction
+# Prediction Detail Card
 st.divider()
 if st.session_state.next_pred:
     p = st.session_state.next_pred
-    st.success(f"### 🎯 NEXT PREDICTION: {p['display']}")
-    st.caption(f"Pattern: {p['pattern']} | {p['model']}")
+    st.success(f"### 🎯 NEXT: {p['display']}")
+    
+    # Detailed Information Table
+    st.markdown("#### Pattern Metadata")
+    meta_df = pd.DataFrame({
+        "Property": ["Model", "Pattern", "Length", "Occurrence", "Next Result"],
+        "Details": [p['model'], p['pattern'], p['length'], p['count'], p['raw_next']]
+    })
+    st.table(meta_df)
 else:
-    st.warning("Awaiting Match... Enter more numbers.")
+    st.warning("No pattern match found for current sequence. Keep entering results.")
 
-# History Table
+# History Maintenance
 if st.session_state.history_log:
     st.write("### 📝 History Maintenance")
-    df_hist = pd.DataFrame(st.session_state.history_log)
-    st.table(df_hist)
-    
-    # Download History
-    csv = df_hist.to_csv(index=False).encode('utf-8')
-    st.download_button("📥 Download History Report", csv, "history.csv", "text/csv")
+    st.table(pd.DataFrame(st.session_state.history_log))
 
 if st.button("Reset Dashboard"):
     for key in st.session_state.keys(): del st.session_state[key]
