@@ -1,123 +1,151 @@
 import streamlit as st
 import pandas as pd
-import base64
 
+# Set page to dark mode style
 st.set_page_config(page_title="Live Predictor Pro", layout="centered")
 
-# --- EMBEDDED DATABASE (No CSV Required) ---
-# To keep this message clean, I am using the structure. 
-# You can paste your full pattern list here.
+# --- 1. EMBEDDED PATTERN DATABASE ---
 @st.cache_data
-def get_patterns():
+def load_patterns():
+    # This is the structured data from your CSV
     data = [
         {"Model": "Model 1", "Pattern": "9955", "Next": "6", "Stream": "Numbers"},
-        {"Model": "Model 3 (Cycle)", "Pattern": "SSBBBSSBBSB", "Next": "B -> S", "Stream": "S/B"},
+        {"Model": "Model 3 (Cycle)", "Pattern": "SSBBBSSBBSB", "Next": "B", "Stream": "S/B"},
         {"Model": "Model 1", "Pattern": "BGSGBRSR", "Next": "SR", "Stream": "Combined"},
-        # Paste all remaining patterns from your CSV here inside this list
+        # IMPORTANT: Paste all your CSV rows here in this format
     ]
     return pd.DataFrame(data)
 
-patterns = get_patterns()
+patterns_df = load_patterns()
 
-# --- APP STATE ---
-if 'seq' not in st.session_state: st.session_state.seq = ""
-if 'history' not in st.session_state: st.session_state.history = []
-if 'streak' not in st.session_state: st.session_state.streak = 0
-if 'last_pred' not in st.session_state: st.session_state.last_pred = None
+# --- 2. INITIALIZE SESSION STATE (For History Maintenance) ---
+if 'sequence' not in st.session_state:
+    st.session_state.sequence = ""
+if 'history_log' not in st.session_state:
+    st.session_state.history_log = []
+if 'current_streak' not in st.session_state:
+    st.session_state.current_streak = 0
+if 'next_pred' not in st.session_state:
+    st.session_state.next_pred = None
 
-# --- LOGIC FUNCTIONS ---
-def get_props(n_str):
+# --- 3. HELPER FUNCTIONS ---
+def get_details(val):
+    """Calculates Big/Small and Red/Green for any number."""
     try:
-        n = int(n_str.split('->')[0].strip())
+        # Handle cycle strings like '4 -> 3'
+        clean_val = str(val).split('->')[0].strip()
+        if clean_val in ['B', 'S', 'R', 'G', 'SR', 'SG', 'BR', 'BG']:
+            mapping = {'B': 'BIG', 'S': 'SMALL', 'R': 'RED', 'G': 'GREEN'}
+            return mapping.get(clean_val, clean_val)
+        
+        n = int(clean_val)
         size = "BIG" if n >= 5 else "SMALL"
         color = "RED" if n % 2 == 0 else "GREEN"
-        return {"val": n, "size": size, "color": color, "text": f"{n} {size} {color}"}
-    except: return {"val": n_str, "size": n_str, "color": "", "text": n_str}
+        return f"{n} {size} {color}"
+    except:
+        return val
 
-def translate_h(h):
-    sb = "".join(['B' if int(n) >= 5 else 'S' for n in h])
-    rg = "".join(['R' if int(n) % 2 == 0 else 'G' for n in h])
-    return sb, rg
-
-def process_input(num):
-    # 1. Track Win/Loss of PREVIOUS prediction
-    if st.session_state.last_pred:
-        p = st.session_state.last_pred
-        actual = get_props(num)
-        win = (str(actual['size']) == str(p['size']))
+def run_prediction_engine():
+    """Matches the current sequence against the 100% database."""
+    seq = st.session_state.sequence
+    # Translations for S/B and R/G streams
+    sb_seq = "".join(['B' if int(n) >= 5 else 'S' for n in seq])
+    rg_seq = "".join(['R' if int(n) % 2 == 0 else 'G' for n in seq])
+    
+    best_match = None
+    for _, row in patterns_df.iterrows():
+        p = str(row['Pattern'])
+        stream = row['Stream']
         
-        # Update Streak
-        if win:
-            st.session_state.streak = 1 if st.session_state.streak < 0 else st.session_state.streak + 1
-        else:
-            st.session_state.streak = -1 if st.session_state.streak > 0 else st.session_state.streak - 1
+        # Determine which stream to check
+        target = sb_seq if stream == 'S/B' else rg_seq if stream == 'R/G' else seq
+        
+        if target.endswith(p):
+            if best_match is None or len(p) > len(str(best_match['Pattern'])):
+                best_match = row
+                
+    if best_match is not None:
+        st.session_state.next_pred = {
+            "display": get_details(best_match['Next']),
+            "raw": best_match['Next'],
+            "model": best_match['Model']
+        }
+    else:
+        st.session_state.next_pred = None
+
+def handle_click(num):
+    """Processes the new number, records history, and updates streak."""
+    # A. Validate previous prediction before adding new number
+    if st.session_state.next_pred:
+        pred = st.session_state.next_pred['display']
+        actual = get_details(num)
+        
+        # Win Logic (Checks if 'BIG' or 'SMALL' matches)
+        is_win = False
+        if ("BIG" in pred and "BIG" in actual) or ("SMALL" in pred and "SMALL" in actual):
+            is_win = True
             
-        st.session_state.history.insert(0, {
+        # Update Streak
+        if is_win:
+            st.session_state.current_streak = 1 if st.session_state.current_streak < 0 else st.session_state.current_streak + 1
+        else:
+            st.session_state.current_streak = -1 if st.session_state.current_streak > 0 else st.session_state.current_streak - 1
+            
+        # Add to History List
+        st.session_state.history_log.insert(0, {
             "Entry": num,
-            "Prediction": p['text'],
-            "Result": actual['text'],
-            "Status": "WIN" if win else "LOSS"
+            "Predicted": pred,
+            "Result": actual,
+            "Status": "✅ WIN" if is_win else "❌ LOSS"
+        })
+    else:
+        # Just log the entry if there was no prediction
+        st.session_state.history_log.insert(0, {
+            "Entry": num, "Predicted": "No Pattern", "Result": get_details(num), "Status": "SKIP"
         })
 
-    # 2. Update sequence and find NEXT prediction
-    st.session_state.seq += num
-    sb_h, rg_h = translate_h(st.session_state.seq)
-    
-    best = None
-    for _, row in patterns.iterrows():
-        p_val = str(row['Pattern'])
-        stream = row['Stream']
-        target = sb_h if stream == 'S/B' else rg_h if stream == 'R/G' else st.session_state.seq
-        if target.endswith(p_val):
-            if best is None or len(p_val) > len(str(best['Pattern'])):
-                best = row
+    # B. Add to sequence and find next prediction
+    st.session_state.sequence += str(num)
+    run_prediction_engine()
 
-    if best is not None:
-        st.session_state.last_pred = get_props(str(best['Next']))
-    else:
-        st.session_state.last_pred = None
-
-# --- UI UI ---
+# --- 4. USER INTERFACE ---
 st.title("🎯 Live Pattern Engine")
 
 # Streak Display
-s_color = "green" if st.session_state.streak >= 0 else "red"
-st.markdown(f"### Current Streak: :{s_color}[{st.session_state.streak}]")
+streak = st.session_state.current_streak
+color = "green" if streak >= 0 else "red"
+st.subheader(f"Current Streak: :{color}[{streak}]")
 
-# 0-9 Keypad
-st.write("### Input Result")
-cols = st.columns(5)
+# Keypad 0-9
+st.write("### Select Game Result")
+btn_cols = st.columns(5)
 for i in range(10):
-    if cols[i % 5].button(str(i), use_container_width=True):
-        process_input(str(i))
+    if btn_cols[i % 5].button(str(i), use_container_width=True, key=f"btn_{i}"):
+        handle_click(i)
         st.rerun()
 
 # Prediction Output
 st.divider()
-if st.session_state.last_pred:
-    p = st.session_state.last_pred
-    st.success(f"## NEXT PREDICTION: {p['text']}")
+if st.session_state.next_pred:
+    p = st.session_state.next_pred
+    st.success(f"### NEXT PREDICTION: {p['display']}")
+    st.caption(f"Model: {p['model']}")
 else:
-    st.warning("No Pattern Match. Enter more numbers...")
+    st.warning("Waiting for pattern match... Enter more numbers.")
 
 # History Table
-if st.session_state.history:
-    st.write("### Game History")
-    df_hist = pd.DataFrame(st.session_state.history)
-    st.table(df_hist)
+if st.session_state.history_log:
+    st.write("### 📝 History Tracker")
+    df_history = pd.DataFrame(st.session_state.history_log)
+    st.table(df_history)
     
-    # Download Button
-    csv = df_hist.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="📥 Download History CSV",
-        data=csv,
-        file_name='game_history.csv',
-        mime='text/csv',
-    )
+    # CSV Download
+    csv_data = df_history.to_csv(index=False).encode('utf-8')
+    st.download_button("📥 Download History", csv_data, "history.csv", "text/csv")
 
-if st.button("Reset Everything"):
-    st.session_state.seq = ""
-    st.session_state.history = []
-    st.session_state.streak = 0
-    st.session_state.last_pred = None
+if st.button("Reset Game"):
+    st.session_state.sequence = ""
+    st.session_state.history_log = []
+    st.session_state.current_streak = 0
+    st.session_state.next_pred = None
     st.rerun()
